@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { GestureRecognizer, DrawingUtils } from '@mediapipe/tasks-vision'
-import type { Landmark } from './useInspectorFrameLoop'
+import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
+
+type Landmark = NormalizedLandmark
 
 export type KamehamehaPhase = 'IDLE' | 'CHARGING' | 'FIRING' | 'COOLDOWN'
 
@@ -256,7 +258,7 @@ export function useKamehamehaLoop(
         lmCtx.clearRect(0, 0, w, h)
 
         const result = rec.recognizeForVideo(video, ts)
-        const lms    = (result.landmarks ?? []) as Landmark[][]
+        const lms    = result.landmarks ?? []
         setHandCount(lms.length)
 
         for (const lm of lms) {
