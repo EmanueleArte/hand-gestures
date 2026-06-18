@@ -3,18 +3,18 @@ import { useGestureRecognizer } from '../hooks/useGestureRecognizer'
 import { useCamera } from '../hooks/useCamera'
 import { useARFrameLoop, type HandsData } from '../hooks/useARFrameLoop'
 import { StatusScreen } from './StatusScreen'
+import { loadPdfPages } from '../lib/pdfLoader'
+import { loadPptxSlides } from '../lib/pptxLoader'
 
 const PINCH_START = 0.07
 const PINCH_END   = 0.22
 
-// Grab radius as fraction of container width
 const GRAB_RADIUS_FRAC = 0.13
+const SCALE_SPEED      = 1.5
+const MIN_SCALE        = 0.1
+const MAX_SCALE        = 10
 
-// Scale change per normalized two-pinch distance delta
-const SCALE_SPEED = 1.5
-
-const MIN_SCALE = 0.1
-const MAX_SCALE = 10
+const ACCEPT = '.png,.jpg,.jpeg,.svg,.pdf,.pptx'
 
 const LEGEND = [
   { label: 'Grab & Move', desc: 'Pinch near image → drag' },
@@ -22,16 +22,12 @@ const LEGEND = [
   { label: 'Reset',       desc: 'Victory gesture (✌)' },
 ]
 
-const ACCEPT = '.png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml'
-
 function pinchDist(lms: HandsData[number]) {
   return Math.hypot(lms[4].x - lms[8].x, lms[4].y - lms[8].y)
 }
-
 function pinchCenter(lms: HandsData[number]) {
   return { x: (lms[4].x + lms[8].x) / 2, y: (lms[4].y + lms[8].y) / 2 }
 }
-
 function lmToPixels(lm: { x: number; y: number }, w: number, h: number) {
   return { x: (1 - lm.x) * w, y: lm.y * h }
 }
@@ -42,10 +38,15 @@ export function ARInspector2D() {
   const imgRef       = useRef<HTMLImageElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const [grabbed,    setGrabbed]    = useState(false)
-  const [isZooming,  setIsZooming]  = useState(false)
-  const [imageUrl,   setImageUrl]   = useState<string | null>(null)
-  const [imageName,  setImageName]  = useState('')
+  const [grabbed,     setGrabbed]     = useState(false)
+  const [isZooming,   setIsZooming]   = useState(false)
+  const [imageUrl,    setImageUrl]    = useState<string | null>(null)
+  const [imageName,   setImageName]   = useState('')
+  const [pages,       setPages]       = useState<string[]>([])
+  const [currentPage, setCurrentPage] = useState(0)
+  const [docLoading,  setDocLoading]  = useState(false)
+  const [docError,    setDocError]    = useState<string | null>(null)
+  const isBlobUrl = useRef(false)
 
   const { recognizerRef, status: modelStatus, error: modelError } = useGestureRecognizer()
   const { status: cameraStatus, error: cameraError, start: startCamera } = useCamera(videoRef)
@@ -55,25 +56,27 @@ export function ARInspector2D() {
 
   const isRunning = cameraStatus === 'running'
 
-  // Target transform (driven by gestures)
   const targetPos   = useRef({ x: 0, y: 0 })
   const targetScale = useRef(1)
+  const currentPos  = useRef({ x: 0, y: 0 })
+  const currentScl  = useRef(1)
 
-  // Current (lerped) transform applied to DOM
-  const currentPos   = useRef({ x: 0, y: 0 })
-  const currentScale = useRef(1)
-
-  // One-hand grab state
   const isGrabbing  = useRef(false)
   const grabOffset  = useRef({ x: 0, y: 0 })
   const isPinch1H   = useRef(false)
   const wasGrabbing = useRef(false)
 
-  // Two-hand zoom state
   const isPinch2H_0  = useRef(false)
   const isPinch2H_1  = useRef(false)
   const prevZoomDist = useRef<number | null>(null)
   const wasZooming   = useRef(false)
+
+  function resetTransform() {
+    targetPos.current   = { x: 0, y: 0 }
+    targetScale.current = 1
+    currentPos.current  = { x: 0, y: 0 }
+    currentScl.current  = 1
+  }
 
   useEffect(() => {
     if (!isRunning) return
@@ -90,15 +93,14 @@ export function ARInspector2D() {
       const gestures = gesturesRef.current
       const container = containerRef.current
       const img       = imgRef.current
-
       if (!container || !img) { rafId = requestAnimationFrame(loop); return }
 
-      const w = container.clientWidth
-      const h = container.clientHeight
+      const w  = container.clientWidth
+      const h  = container.clientHeight
       const cx = w / 2
       const cy = h / 2
 
-      // ── Victory → reset ──────────────────────────────────────────────────
+      // ── Victory → reset ─────────────────────────────────────────────────
       if (gestures.some(g => g === 'Victory')) {
         targetPos.current   = { x: 0, y: 0 }
         targetScale.current = 1
@@ -111,7 +113,7 @@ export function ARInspector2D() {
         if (wasZooming.current)  { setIsZooming(false); wasZooming.current  = false }
       } else {
 
-        // ── Two-hand zoom ────────────────────────────────────────────────────
+        // ── Two-hand zoom ──────────────────────────────────────────────────
         if (hands.length >= 2) {
           isPinch1H.current = false
           if (isGrabbing.current) {
@@ -131,7 +133,6 @@ export function ARInspector2D() {
           if (isPinch2H_0.current && isPinch2H_1.current) {
             const c0 = lmToPixels(pinchCenter(hands[0]), w, h)
             const c1 = lmToPixels(pinchCenter(hands[1]), w, h)
-            // Normalize by diagonal so SCALE_SPEED matches 3D feel
             const diag    = Math.hypot(w, h)
             const relDist = Math.hypot(c0.x - c1.x, c0.y - c1.y) / diag
 
@@ -154,7 +155,7 @@ export function ARInspector2D() {
           if (wasZooming.current) { setIsZooming(false); wasZooming.current = false }
         }
 
-        // ── One-hand grab + move ─────────────────────────────────────────────
+        // ── One-hand grab + move ───────────────────────────────────────────
         if (hands.length === 1) {
           const lms = hands[0]
           const pd  = pinchDist(lms)
@@ -163,8 +164,7 @@ export function ARInspector2D() {
           else if (isPinch1H.current && pd > PINCH_END) isPinch1H.current = false
 
           if (isPinch1H.current) {
-            const pc      = pinchCenter(lms)
-            const pinchPx = lmToPixels(pc, w, h)
+            const pinchPx = lmToPixels(pinchCenter(lms), w, h)
             const imgCx   = cx + targetPos.current.x
             const imgCy   = cy + targetPos.current.y
 
@@ -193,17 +193,17 @@ export function ARInspector2D() {
         }
       }
 
-      // ── Lerp current toward target ───────────────────────────────────────
+      // ── Lerp current toward target ────────────────────────────────────
       const lerp = isGrabbing.current ? 0.35 : 0.15
       const t    = 1 - Math.pow(1 - lerp, delta * 60)
 
-      currentPos.current.x   += (targetPos.current.x   - currentPos.current.x)   * t
-      currentPos.current.y   += (targetPos.current.y   - currentPos.current.y)   * t
-      currentScale.current   += (targetScale.current   - currentScale.current)   * t
+      currentPos.current.x += (targetPos.current.x - currentPos.current.x) * t
+      currentPos.current.y += (targetPos.current.y - currentPos.current.y) * t
+      currentScl.current   += (targetScale.current  - currentScl.current)  * t
 
       img.style.top       = `calc(50% + ${currentPos.current.y}px)`
       img.style.left      = `calc(50% + ${currentPos.current.x}px)`
-      img.style.transform = `translate(-50%, -50%) scale(${currentScale.current})`
+      img.style.transform = `translate(-50%, -50%) scale(${currentScl.current})`
 
       rafId = requestAnimationFrame(loop)
     }
@@ -212,16 +212,60 @@ export function ARInspector2D() {
     return () => cancelAnimationFrame(rafId)
   }, [isRunning, handsRef, gesturesRef])
 
-  const handleFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setImageUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
+
+    // Revoke previous blob URL
+    setImageUrl(prev => {
+      if (prev && isBlobUrl.current) URL.revokeObjectURL(prev)
+      return null
+    })
+    isBlobUrl.current = false
+    setPages([])
+    setCurrentPage(0)
+    setDocError(null)
     setImageName(file.name)
-    targetPos.current   = { x: 0, y: 0 }
-    targetScale.current = 1
-    currentPos.current  = { x: 0, y: 0 }
-    currentScale.current = 1
+    resetTransform()
+
+    const ext = file.name.split('.').pop()?.toLowerCase()
+
+    if (ext === 'pdf') {
+      setDocLoading(true)
+      try {
+        const pageUrls = await loadPdfPages(file)
+        setPages(pageUrls)
+        setCurrentPage(0)
+        setImageUrl(pageUrls[0] ?? null)
+      } catch (err) {
+        setDocError(err instanceof Error ? err.message : 'Failed to load PDF')
+      } finally {
+        setDocLoading(false)
+      }
+    } else if (ext === 'pptx') {
+      setDocLoading(true)
+      try {
+        const slideUrls = await loadPptxSlides(file)
+        setPages(slideUrls)
+        setCurrentPage(0)
+        setImageUrl(slideUrls[0] ?? null)
+      } catch (err) {
+        setDocError(err instanceof Error ? err.message : 'Failed to load PPTX')
+      } finally {
+        setDocLoading(false)
+      }
+    } else {
+      isBlobUrl.current = true
+      setImageUrl(URL.createObjectURL(file))
+    }
   }, [])
+
+  const goToPage = useCallback((index: number) => {
+    if (index < 0 || index >= pages.length) return
+    setCurrentPage(index)
+    setImageUrl(pages[index])
+    resetTransform()
+  }, [pages])
 
   const screenStatus =
     modelStatus === 'loading' ? 'loading' :
@@ -237,11 +281,14 @@ export function ARInspector2D() {
       {/* File loader */}
       <div className="flex items-center gap-3 w-full">
         <label className="cursor-pointer flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          Load Image
+          Load File
           <input type="file" accept={ACCEPT} onChange={handleFile} className="hidden" />
         </label>
         {imageName && (
           <span className="text-slate-400 text-sm truncate max-w-xs">{imageName}</span>
+        )}
+        {docError && (
+          <span className="text-red-400 text-sm">{docError}</span>
         )}
       </div>
 
@@ -264,7 +311,7 @@ export function ARInspector2D() {
           className="absolute inset-0 w-full h-full [transform:scaleX(-1)] pointer-events-none"
         />
 
-        {/* Layer 3 – 2D image */}
+        {/* Layer 3 – 2D image / slide */}
         {imageUrl && (
           <img
             ref={imgRef}
@@ -282,9 +329,16 @@ export function ARInspector2D() {
           />
         )}
 
-        {!imageUrl && isRunning && (
+        {!imageUrl && isRunning && !docLoading && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-slate-500 text-sm">Load an image to inspect</span>
+            <span className="text-slate-500 text-sm">Load a file to inspect</span>
+          </div>
+        )}
+
+        {/* Document processing overlay */}
+        {docLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 z-30">
+            <span className="text-slate-300 text-sm animate-pulse">Processing document…</span>
           </div>
         )}
 
@@ -314,6 +368,29 @@ export function ARInspector2D() {
           </div>
         )}
       </div>
+
+      {/* Page / slide navigation */}
+      {pages.length > 1 && (
+        <div className="flex items-center justify-center gap-4 bg-slate-800/60 border border-slate-700 rounded-xl px-5 py-3 w-full">
+          <button
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage === 0}
+            className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+          >
+            ← Prev
+          </button>
+          <span className="text-sm text-slate-300 tabular-nums">
+            {currentPage + 1} / {pages.length}
+          </span>
+          <button
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage === pages.length - 1}
+            className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+          >
+            Next →
+          </button>
+        </div>
+      )}
 
       {/* Legend */}
       <div className="bg-slate-800/60 border border-slate-700 rounded-xl px-5 py-4 w-full">

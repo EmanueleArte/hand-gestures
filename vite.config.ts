@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    exclude: ['@mediapipe/tasks-vision'],
+    exclude: ['@mediapipe/tasks-vision', 'pdfjs-dist'],
+    include: ['jszip'],
   },
 })

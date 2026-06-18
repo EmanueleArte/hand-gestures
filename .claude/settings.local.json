@@ -11,7 +11,11 @@
       "Bash(Sort-Object FullName)",
       "Bash(npx tsc *)",
       "Bash(pnpm dev *)",
-      "Bash(Get-Content \"C:\\\\Users\\\\EMANUE~1.ART\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-emanuele-artegiani-Documents-Progetti-hand-gestures\\\\d6ca6f37-b168-49a9-8b0e-a82d6db5a051\\\\tasks\\\\bbpxpyc41.output\")"
+      "Bash(Get-Content \"C:\\\\Users\\\\EMANUE~1.ART\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-emanuele-artegiani-Documents-Progetti-hand-gestures\\\\d6ca6f37-b168-49a9-8b0e-a82d6db5a051\\\\tasks\\\\bbpxpyc41.output\")",
+      "Bash(pnpm add *)",
+      "Bash(node -e \"const p = require\\('./node_modules/pdfjs-dist/package.json'\\); console.log\\('main:', p.main, 'module:', p.module, 'exports keys:', Object.keys\\(p.exports || {}\\).slice\\(0,10\\)\\)\")",
+      "Bash(node -e \"const p = require\\('./node_modules/pdfjs-dist/package.json'\\); console.log\\(JSON.stringify\\(p.exports, null, 2\\)\\)\")",
+      "Bash(node *)"
     ]
   }
 }

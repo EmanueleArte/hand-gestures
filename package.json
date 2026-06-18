@@ -12,6 +12,8 @@
     "@mediapipe/tasks-vision": "^0.10.21",
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.0.0",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^6.0.227",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "three": "^0.180.0"
