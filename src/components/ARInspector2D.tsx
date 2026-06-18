@@ -120,6 +120,20 @@ export function ARInspector2D() {
     let rafId: number
     let lastTime = performance.now()
 
+    function flashButton(btn: HTMLButtonElement | null) {
+      if (!btn) return
+      // Animated press-in
+      btn.style.transition = 'transform 0.12s ease-in, background-color 0.12s ease-in'
+      btn.style.transform = 'scale(0.9)'
+      btn.style.backgroundColor = 'rgba(255,255,255,0.4)'
+      // Spring-back after press completes
+      setTimeout(() => {
+        btn.style.transition = 'transform 0.22s cubic-bezier(0.34,1.56,0.64,1), background-color 0.18s ease-out'
+        btn.style.transform = ''
+        btn.style.backgroundColor = ''
+      }, 160)
+    }
+
     function loop() {
       const now   = performance.now()
       const delta = Math.min((now - lastTime) / 1000, 0.1)
@@ -216,10 +230,13 @@ export function ARInspector2D() {
                     releasePx.y <= r.top  - cRect.top  + r.height + TAP_HIT_PAD
                   )
                 }
-                if (hitTest(prevBtnRef.current) && currentPageRef.current > 0)
+                if (hitTest(prevBtnRef.current) && currentPageRef.current > 0) {
+                  flashButton(prevBtnRef.current)
                   goToPageDirect(currentPageRef.current - 1)
-                else if (hitTest(nextBtnRef.current) && currentPageRef.current < pagesRef.current.length - 1)
+                } else if (hitTest(nextBtnRef.current) && currentPageRef.current < pagesRef.current.length - 1) {
+                  flashButton(nextBtnRef.current)
                   goToPageDirect(currentPageRef.current + 1)
+                }
               }
             }
             tapState.current = null
