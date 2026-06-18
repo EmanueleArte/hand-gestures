@@ -1,11 +1,16 @@
+import { useRef } from 'react'
+import { FullscreenButton } from './FullscreenButton'
+
 type Props = {
   videoRef: React.RefObject<HTMLVideoElement | null>
   canvasRef: React.RefObject<HTMLCanvasElement | null>
 }
 
 export function VideoCanvas({ videoRef, canvasRef }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
   return (
-    <div className="relative w-full max-w-2xl rounded-xl overflow-hidden border border-slate-700 bg-black">
+    <div ref={containerRef} className="relative w-full max-w-2xl rounded-xl overflow-hidden border border-slate-700 bg-black">
       <video
         ref={videoRef}
         className="w-full block [transform:scaleX(-1)]"
@@ -16,6 +21,9 @@ export function VideoCanvas({ videoRef, canvasRef }: Props) {
         ref={canvasRef}
         className="absolute top-0 left-0 w-full h-full [transform:scaleX(-1)] pointer-events-none"
       />
+      <div className="absolute top-2 right-2 z-20 hidden">
+        <FullscreenButton targetRef={containerRef} />
+      </div>
     </div>
   )
 }

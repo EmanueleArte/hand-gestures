@@ -3,6 +3,7 @@ import { useGestureRecognizer } from '../hooks/useGestureRecognizer'
 import { useCamera } from '../hooks/useCamera'
 import { useARFrameLoop, type HandsData } from '../hooks/useARFrameLoop'
 import { StatusScreen } from './StatusScreen'
+import { FullscreenButton } from './FullscreenButton'
 import { loadPdfPages } from '../lib/pdfLoader'
 import { loadPptxSlides } from '../lib/pptxLoader'
 
@@ -496,12 +497,17 @@ export function ARInspector2D() {
 
         {/* Gesture nav hint badge */}
         {isMultiPage && navMode === 'gesture' && isRunning && (
-          <div className="absolute top-3 right-3 z-20 pointer-events-none">
+          <div className="absolute top-2.5 right-12 z-20 pointer-events-none">
             <span className="bg-black/60 text-white text-xs px-2.5 py-1.5 rounded-lg backdrop-blur-sm">
               Thumb Up / Down = page
             </span>
           </div>
         )}
+
+        {/* Fullscreen toggle */}
+        <div className="absolute top-2 right-2 z-20">
+          <FullscreenButton targetRef={containerRef} />
+        </div>
 
         {/* Document processing overlay */}
         {docLoading && (

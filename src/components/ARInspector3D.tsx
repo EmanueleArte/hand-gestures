@@ -6,6 +6,7 @@ import { useGestureRecognizer } from '../hooks/useGestureRecognizer'
 import { useCamera } from '../hooks/useCamera'
 import { useARFrameLoop, type HandsData } from '../hooks/useARFrameLoop'
 import { StatusScreen } from './StatusScreen'
+import { FullscreenButton } from './FullscreenButton'
 
 // Pinch detection thresholds (normalized thumb-tip ↔ index-tip distance)
 const PINCH_START = 0.07   // enter pinch mode
@@ -265,8 +266,9 @@ function ARCube({ handsRef, gesturesRef, onGrabChange, onZoomChange }: ARCubePro
 }
 
 export function ARInspector3D() {
-  const videoRef  = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const videoRef     = useRef<HTMLVideoElement>(null)
+  const canvasRef    = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [grabbed,   setGrabbed]   = useState(false)
   const [isZooming, setIsZooming] = useState(false)
 
@@ -292,7 +294,7 @@ export function ARInspector3D() {
   return (
     <div className="flex flex-col items-center gap-4 w-full max-w-4xl">
       {/* AR view – all three layers stacked in the same aspect-video container */}
-      <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-slate-700 bg-black">
+      <div ref={containerRef} className="relative w-full aspect-video rounded-xl overflow-hidden border border-slate-700 bg-black">
 
         {/* Layer 1 – webcam background */}
         <video
@@ -326,6 +328,11 @@ export function ARInspector3D() {
               onZoomChange={setIsZooming}
             />
           </Canvas>
+        </div>
+
+        {/* Fullscreen toggle */}
+        <div className="absolute top-2 right-2 z-20">
+          <FullscreenButton targetRef={containerRef} />
         </div>
 
         {/* Status overlay (loading / error / start button) */}
