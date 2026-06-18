@@ -1,8 +1,9 @@
-export type Tab = 'counter' | 'inspector'
+export type Tab = 'counter' | 'inspector' | 'ar'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'counter', label: 'Hand Gesture Counter' },
+  { id: 'counter',   label: 'Hand Gesture Counter' },
   { id: 'inspector', label: '3D Object Inspector' },
+  { id: 'ar',        label: 'Augmented Reality 3D Inspector' },
 ]
 
 type Props = {
