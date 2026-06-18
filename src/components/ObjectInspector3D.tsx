@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
@@ -15,52 +15,91 @@ import { StatusScreen } from './StatusScreen'
 const LERP = 0.12
 const MOVE_SCALE = 3.5
 const ROT_SPEED = 6
-const ZOOM_SPEED = 0.8
+// Pinch: normalized 2-D distance between thumb tip (lm 4) and index tip (lm 8).
+// Hysteresis: activate below START, release only above END so spreading fingers
+// (zoom-in gesture) doesn't immediately deactivate pinch mode.
+const PINCH_START = 0.07
+const PINCH_END = 0.22
+const PINCH_ZOOM_SPEED = 12
 const MIN_SCALE = 0.2
 const MAX_SCALE = 4
 
 const GESTURE_CONTROLS = [
-  { gesture: 'Closed_Fist', action: 'Move', description: 'Tracks wrist X/Y' },
-  { gesture: 'Open_Palm', action: 'Rotate', description: 'Hand movement → rotation' },
-  { gesture: 'Thumb_Up', action: 'Zoom In', description: 'Scale up while held' },
-  { gesture: 'Thumb_Down', action: 'Zoom Out', description: 'Scale down while held' },
-  { gesture: 'Victory', action: 'Reset', description: 'Reset pos / rot / scale' },
+  { gesture: 'Closed_Fist', action: 'Rotate', description: 'Drag hand → rotation' },
+  { gesture: 'Open_Palm',   action: 'Move',   description: 'Tracks wrist X/Y' },
+  { gesture: 'Pinch',       action: 'Zoom',   description: 'Pinch/spread thumb-index' },
+  { gesture: 'Victory',     action: 'Reset',  description: 'Reset pos / rot / scale' },
 ] as const
+
+type GestureKey = (typeof GESTURE_CONTROLS)[number]['gesture']
 
 type CubeProps = {
   gestureRef: React.MutableRefObject<DetectedGesture>
   landmarkRef: React.MutableRefObject<Landmark[] | null>
+  onPinchChange: (pinching: boolean) => void
 }
 
-function InspectorCube({ gestureRef, landmarkRef }: CubeProps) {
+function InspectorCube({ gestureRef, landmarkRef, onPinchChange }: CubeProps) {
   const groupRef = useRef<THREE.Group>(null)
   const targetPos = useRef(new THREE.Vector3(0, 0, 0))
   const targetRot = useRef({ x: 0, y: 0 })
   const targetScale = useRef(1)
   const prevWrist = useRef<{ x: number; y: number } | null>(null)
+  const prevPinchDist = useRef<number | null>(null)
+  const isPinchActive = useRef(false)
+  const wasPinching = useRef(false)
 
   useFrame((_, delta) => {
     const group = groupRef.current
     if (!group) return
 
     const gesture = gestureRef.current
-    const wrist = landmarkRef.current?.[0]
+    const landmarks = landmarkRef.current
+    const wrist = landmarks?.[0]
 
-    if (gesture && wrist) {
+    // --- Pinch zoom (landmark-based) ---
+    // Disabled when Closed_Fist is active to avoid false positives (fist ≈ small thumb-index dist).
+    const thumbTip = landmarks?.[4]
+    const indexTip = landmarks?.[8]
+    let isPinching = false
+
+    if (gesture?.name !== 'Closed_Fist' && thumbTip && indexTip) {
+      const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y)
+
+      // Hysteresis toggle: enter pinch mode below START, exit only above END.
+      if (!isPinchActive.current && dist < PINCH_START) isPinchActive.current = true
+      else if (isPinchActive.current && dist > PINCH_END) isPinchActive.current = false
+
+      isPinching = isPinchActive.current
+
+      if (isPinching) {
+        if (prevPinchDist.current !== null) {
+          const dd = dist - prevPinchDist.current
+          // spreading (dd > 0) → zoom in; pinching (dd < 0) → zoom out
+          targetScale.current = Math.max(
+            MIN_SCALE,
+            Math.min(MAX_SCALE, targetScale.current + dd * PINCH_ZOOM_SPEED),
+          )
+        }
+        prevPinchDist.current = dist
+      } else {
+        prevPinchDist.current = null
+      }
+    } else {
+      isPinchActive.current = false
+      prevPinchDist.current = null
+    }
+
+    if (isPinching !== wasPinching.current) {
+      onPinchChange(isPinching)
+      wasPinching.current = isPinching
+    }
+
+    // --- Gesture classifier actions (skipped while pinching) ---
+    if (!isPinching && gesture && wrist) {
       switch (gesture.name) {
         case 'Closed_Fist': {
-          // wrist.x is unmirrored MediaPipe coord; negate to match mirrored display
-          const wx = (0.5 - wrist.x) * MOVE_SCALE * 2
-          const wy = (0.5 - wrist.y) * MOVE_SCALE * 1.5
-          targetPos.current.set(
-            Math.max(-MOVE_SCALE, Math.min(MOVE_SCALE, wx)),
-            Math.max(-MOVE_SCALE * 0.75, Math.min(MOVE_SCALE * 0.75, wy)),
-            0,
-          )
-          prevWrist.current = null
-          break
-        }
-        case 'Open_Palm': {
+          // Rotate: delta wrist movement → rotation axes
           if (prevWrist.current) {
             const dx = (prevWrist.current.x - wrist.x) * ROT_SPEED
             const dy = (wrist.y - prevWrist.current.y) * ROT_SPEED
@@ -70,13 +109,15 @@ function InspectorCube({ gestureRef, landmarkRef }: CubeProps) {
           prevWrist.current = { x: wrist.x, y: wrist.y }
           break
         }
-        case 'Thumb_Up': {
-          targetScale.current = Math.min(targetScale.current + delta * ZOOM_SPEED, MAX_SCALE)
-          prevWrist.current = null
-          break
-        }
-        case 'Thumb_Down': {
-          targetScale.current = Math.max(targetScale.current - delta * ZOOM_SPEED, MIN_SCALE)
+        case 'Open_Palm': {
+          // Move: absolute wrist position → cube X/Y
+          const wx = (0.5 - wrist.x) * MOVE_SCALE * 2
+          const wy = (0.5 - wrist.y) * MOVE_SCALE * 1.5
+          targetPos.current.set(
+            Math.max(-MOVE_SCALE, Math.min(MOVE_SCALE, wx)),
+            Math.max(-MOVE_SCALE * 0.75, Math.min(MOVE_SCALE * 0.75, wy)),
+            0,
+          )
           prevWrist.current = null
           break
         }
@@ -94,7 +135,7 @@ function InspectorCube({ gestureRef, landmarkRef }: CubeProps) {
       prevWrist.current = null
     }
 
-    // Frame-rate-corrected lerp (equivalent to LERP at 60 fps)
+    // Frame-rate-corrected lerp
     const t = 1 - Math.pow(1 - LERP, delta * 60)
     group.position.lerp(targetPos.current, t)
     group.rotation.x += (targetRot.current.x - group.rotation.x) * t
@@ -112,16 +153,19 @@ function InspectorCube({ gestureRef, landmarkRef }: CubeProps) {
   )
 }
 
-function GestureBadge({ detected }: { detected: DetectedGesture }) {
+function GestureBadge({ detected, isPinching }: { detected: DetectedGesture; isPinching: boolean }) {
+  const label = isPinching ? 'Pinch' : (detected?.name?.replace(/_/g, ' ') ?? null)
+  const score = isPinching ? null : detected?.score
+
   return (
     <div className="bg-slate-800/60 border border-slate-700 rounded-xl px-5 py-4">
       <span className="text-xs uppercase tracking-widest text-slate-400 block mb-1">Detected</span>
-      {detected ? (
+      {label ? (
         <div className="flex items-baseline gap-2">
-          <span className="text-xl font-bold text-violet-400">
-            {detected.name.replace(/_/g, ' ')}
-          </span>
-          <span className="text-sm text-slate-400">{(detected.score * 100).toFixed(1)}%</span>
+          <span className="text-xl font-bold text-violet-400">{label}</span>
+          {score != null && (
+            <span className="text-sm text-slate-400">{(score * 100).toFixed(1)}%</span>
+          )}
         </div>
       ) : (
         <span className="text-2xl text-slate-600">—</span>
@@ -130,13 +174,13 @@ function GestureBadge({ detected }: { detected: DetectedGesture }) {
   )
 }
 
-function GestureLegend({ current }: { current: string | null }) {
+function GestureLegend({ current }: { current: GestureKey | null }) {
   return (
     <div className="bg-slate-800/60 border border-slate-700 rounded-xl px-5 py-4 w-full">
       <span className="text-xs uppercase tracking-widest text-slate-400 block mb-3">
         Gesture controls
       </span>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {GESTURE_CONTROLS.map(({ gesture, action, description }) => (
           <div
             key={gesture}
@@ -159,6 +203,7 @@ function GestureLegend({ current }: { current: string | null }) {
 export function ObjectInspector3D() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [isPinching, setIsPinching] = useState(false)
 
   const { recognizerRef, status: modelStatus, error: modelError } = useGestureRecognizer()
   const { status: cameraStatus, error: cameraError, start: startCamera } = useCamera(videoRef)
@@ -179,6 +224,10 @@ export function ObjectInspector3D() {
 
   const screenError = modelError || cameraError
 
+  const activeControl: GestureKey | null = isPinching
+    ? 'Pinch'
+    : ((detected?.name ?? null) as GestureKey | null)
+
   return (
     <div className="flex flex-col items-center gap-4 w-full max-w-5xl">
       <div className="relative w-full">
@@ -196,14 +245,17 @@ export function ObjectInspector3D() {
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[5, 8, 5]} intensity={1.5} />
                 <directionalLight position={[-4, -2, -4]} intensity={0.4} color="#818cf8" />
-                <InspectorCube gestureRef={gestureRef} landmarkRef={landmarkRef} />
+                <InspectorCube
+                  gestureRef={gestureRef}
+                  landmarkRef={landmarkRef}
+                  onPinchChange={setIsPinching}
+                />
               </Canvas>
             </div>
-            {isRunning && <GestureBadge detected={detected} />}
+            {isRunning && <GestureBadge detected={detected} isPinching={isPinching} />}
           </div>
         </div>
 
-        {/* Overlay while model/camera not ready */}
         {screenStatus && (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm rounded-xl z-10">
             <StatusScreen status={screenStatus} error={screenError} onStart={startCamera} />
@@ -211,7 +263,7 @@ export function ObjectInspector3D() {
         )}
       </div>
 
-      <GestureLegend current={detected?.name ?? null} />
+      <GestureLegend current={activeControl} />
     </div>
   )
 }
