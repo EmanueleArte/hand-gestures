@@ -7,12 +7,15 @@ import { loadPdfPages } from '../lib/pdfLoader'
 import { loadPptxSlides } from '../lib/pptxLoader'
 
 const PINCH_START = 0.07
-const PINCH_END   = 0.22
+const PINCH_END   = 0.1
 
-const GRAB_RADIUS_FRAC = 0.13
-const SCALE_SPEED      = 1.5
-const MIN_SCALE        = 0.1
-const MAX_SCALE        = 10
+const GRAB_RADIUS_FRAC     = 0.13
+const SCALE_SPEED          = 1.5
+const MIN_SCALE            = 0.1
+const MAX_SCALE            = 10
+const GESTURE_NAV_COOLDOWN = 1200  // ms between gesture-triggered page changes
+const TAP_MAX_DURATION     = 350   // ms: pinch shorter than this = tap, not grab
+const TAP_HIT_PAD          = 18    // px padding around button hit area
 
 const ACCEPT = '.png,.jpg,.jpeg,.svg,.pdf,.pptx'
 
@@ -32,11 +35,16 @@ function lmToPixels(lm: { x: number; y: number }, w: number, h: number) {
   return { x: (1 - lm.x) * w, y: lm.y * h }
 }
 
+type NavMode = 'buttons' | 'gesture'
+
 export function ARInspector2D() {
   const videoRef     = useRef<HTMLVideoElement>(null)
   const canvasRef    = useRef<HTMLCanvasElement>(null)
   const imgRef       = useRef<HTMLImageElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const navBtnsRef   = useRef<HTMLDivElement>(null)
+  const prevBtnRef   = useRef<HTMLButtonElement>(null)
+  const nextBtnRef   = useRef<HTMLButtonElement>(null)
 
   const [grabbed,     setGrabbed]     = useState(false)
   const [isZooming,   setIsZooming]   = useState(false)
@@ -46,7 +54,19 @@ export function ARInspector2D() {
   const [currentPage, setCurrentPage] = useState(0)
   const [docLoading,  setDocLoading]  = useState(false)
   const [docError,    setDocError]    = useState<string | null>(null)
-  const isBlobUrl = useRef(false)
+  const [navMode,     setNavMode]     = useState<NavMode>('buttons')
+
+  const isBlobUrl      = useRef(false)
+  const pagesRef       = useRef<string[]>([])
+  const currentPageRef = useRef(0)
+  const navModeRef     = useRef<NavMode>('buttons')
+  const lastPageChange = useRef(0)
+  const prevGestureNav = useRef<string[]>([])
+  // Pinch tap detection: tracks start time; nulled when grab activates
+  const tapState       = useRef<{ startTime: number } | null>(null)
+
+  // Keep refs in sync with state
+  navModeRef.current = navMode
 
   const { recognizerRef, status: modelStatus, error: modelError } = useGestureRecognizer()
   const { status: cameraStatus, error: cameraError, start: startCamera } = useCamera(videoRef)
@@ -66,8 +86,7 @@ export function ARInspector2D() {
   const isPinch1H   = useRef(false)
   const wasGrabbing = useRef(false)
 
-  const isPinch2H_0  = useRef(false)
-  const isPinch2H_1  = useRef(false)
+  const isPinch2H    = useRef(false)   // true only when BOTH hands pinch simultaneously
   const prevZoomDist = useRef<number | null>(null)
   const wasZooming   = useRef(false)
 
@@ -77,6 +96,23 @@ export function ARInspector2D() {
     currentPos.current  = { x: 0, y: 0 }
     currentScl.current  = 1
   }
+
+  // Navigate to a page using refs (safe to call from RAF)
+  const goToPageDirect = useCallback((index: number) => {
+    const ps = pagesRef.current
+    if (index < 0 || index >= ps.length) return
+    setCurrentPage(index)
+    setImageUrl(ps[index])
+    currentPageRef.current = index
+  }, [])
+
+  // Navigate using state (for bottom bar buttons)
+  const goToPage = useCallback((index: number) => {
+    if (index < 0 || index >= pages.length) return
+    setCurrentPage(index)
+    setImageUrl(pages[index])
+    currentPageRef.current = index
+  }, [pages])
 
   useEffect(() => {
     if (!isRunning) return
@@ -104,10 +140,9 @@ export function ARInspector2D() {
       if (gestures.some(g => g === 'Victory')) {
         targetPos.current   = { x: 0, y: 0 }
         targetScale.current = 1
-        isGrabbing.current  = false
-        isPinch1H.current   = false
-        isPinch2H_0.current = false
-        isPinch2H_1.current = false
+        isGrabbing.current   = false
+        isPinch1H.current    = false
+        isPinch2H.current    = false
         prevZoomDist.current = null
         if (wasGrabbing.current) { setGrabbed(false);   wasGrabbing.current = false }
         if (wasZooming.current)  { setIsZooming(false); wasZooming.current  = false }
@@ -124,13 +159,14 @@ export function ARInspector2D() {
           const pd0 = pinchDist(hands[0])
           const pd1 = pinchDist(hands[1])
 
-          if (!isPinch2H_0.current && pd0 < PINCH_START) isPinch2H_0.current = true
-          else if (isPinch2H_0.current && pd0 > PINCH_END) isPinch2H_0.current = false
+          // Activate only when BOTH hands pinch simultaneously;
+          // deactivate as soon as EITHER hand opens
+          if (!isPinch2H.current && pd0 < PINCH_START && pd1 < PINCH_START)
+            isPinch2H.current = true
+          else if (isPinch2H.current && (pd0 > PINCH_END || pd1 > PINCH_END))
+            isPinch2H.current = false
 
-          if (!isPinch2H_1.current && pd1 < PINCH_START) isPinch2H_1.current = true
-          else if (isPinch2H_1.current && pd1 > PINCH_END) isPinch2H_1.current = false
-
-          if (isPinch2H_0.current && isPinch2H_1.current) {
+          if (isPinch2H.current) {
             const c0 = lmToPixels(pinchCenter(hands[0]), w, h)
             const c1 = lmToPixels(pinchCenter(hands[1]), w, h)
             const diag    = Math.hypot(w, h)
@@ -149,19 +185,45 @@ export function ARInspector2D() {
             if (wasZooming.current) { setIsZooming(false); wasZooming.current = false }
           }
         } else {
-          isPinch2H_0.current  = false
-          isPinch2H_1.current  = false
+          isPinch2H.current    = false
           prevZoomDist.current = null
           if (wasZooming.current) { setIsZooming(false); wasZooming.current = false }
         }
 
-        // ── One-hand grab + move ───────────────────────────────────────────
+        // ── One-hand grab + move (with pinch-tap detection) ───────────────
         if (hands.length === 1) {
           const lms = hands[0]
           const pd  = pinchDist(lms)
 
-          if (!isPinch1H.current && pd < PINCH_START) isPinch1H.current = true
-          else if (isPinch1H.current && pd > PINCH_END) isPinch1H.current = false
+          if (!isPinch1H.current && pd < PINCH_START) {
+            isPinch1H.current = true
+            tapState.current  = { startTime: now }
+          } else if (isPinch1H.current && pd > PINCH_END) {
+            isPinch1H.current = false
+            // Pinch released — check for short tap on nav buttons
+            if (tapState.current && !isGrabbing.current) {
+              const dur = now - tapState.current.startTime
+              if (dur < TAP_MAX_DURATION && navModeRef.current === 'buttons') {
+                const releasePx = lmToPixels(pinchCenter(lms), w, h)
+                const cRect = container.getBoundingClientRect()
+                const hitTest = (el: HTMLButtonElement | null) => {
+                  if (!el) return false
+                  const r = el.getBoundingClientRect()
+                  return (
+                    releasePx.x >= r.left - cRect.left - TAP_HIT_PAD &&
+                    releasePx.x <= r.left - cRect.left + r.width  + TAP_HIT_PAD &&
+                    releasePx.y >= r.top  - cRect.top  - TAP_HIT_PAD &&
+                    releasePx.y <= r.top  - cRect.top  + r.height + TAP_HIT_PAD
+                  )
+                }
+                if (hitTest(prevBtnRef.current) && currentPageRef.current > 0)
+                  goToPageDirect(currentPageRef.current - 1)
+                else if (hitTest(nextBtnRef.current) && currentPageRef.current < pagesRef.current.length - 1)
+                  goToPageDirect(currentPageRef.current + 1)
+              }
+            }
+            tapState.current = null
+          }
 
           if (isPinch1H.current) {
             const pinchPx = lmToPixels(pinchCenter(lms), w, h)
@@ -173,6 +235,7 @@ export function ARInspector2D() {
               if (d < w * GRAB_RADIUS_FRAC) {
                 isGrabbing.current = true
                 grabOffset.current = { x: imgCx - pinchPx.x, y: imgCy - pinchPx.y }
+                tapState.current   = null   // became a grab, not a tap
                 setGrabbed(true)
                 wasGrabbing.current = true
               }
@@ -191,9 +254,23 @@ export function ARInspector2D() {
           isPinch1H.current  = false
           if (wasGrabbing.current) { setGrabbed(false); wasGrabbing.current = false }
         }
+
+        // ── Gesture page navigation ────────────────────────────────────────
+        if (navModeRef.current === 'gesture' && pagesRef.current.length > 1) {
+          const prev = prevGestureNav.current
+          const thumbUpNew   = gestures.some(g => g === 'Thumb_Up')   && !prev.some(g => g === 'Thumb_Up')
+          const thumbDownNew = gestures.some(g => g === 'Thumb_Down') && !prev.some(g => g === 'Thumb_Down')
+
+          if ((thumbUpNew || thumbDownNew) && now - lastPageChange.current > GESTURE_NAV_COOLDOWN) {
+            if (thumbUpNew)   goToPageDirect(currentPageRef.current + 1)
+            if (thumbDownNew) goToPageDirect(currentPageRef.current - 1)
+            lastPageChange.current = now
+          }
+          prevGestureNav.current = gestures
+        }
       }
 
-      // ── Lerp current toward target ────────────────────────────────────
+      // ── Lerp current toward target ─────────────────────────────────────
       const lerp = isGrabbing.current ? 0.35 : 0.15
       const t    = 1 - Math.pow(1 - lerp, delta * 60)
 
@@ -205,23 +282,30 @@ export function ARInspector2D() {
       img.style.left      = `calc(50% + ${currentPos.current.x}px)`
       img.style.transform = `translate(-50%, -50%) scale(${currentScl.current})`
 
+      // ── Floating nav buttons: follow bottom edge of image ───────────────
+      const navBtns = navBtnsRef.current
+      if (navBtns) {
+        const imgRect = img.getBoundingClientRect()
+        const cRect   = container.getBoundingClientRect()
+        navBtns.style.left = `${imgRect.left - cRect.left + imgRect.width / 2}px`
+        navBtns.style.top  = `${imgRect.bottom - cRect.top + 8}px`
+      }
+
       rafId = requestAnimationFrame(loop)
     }
 
     rafId = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(rafId)
-  }, [isRunning, handsRef, gesturesRef])
+  }, [isRunning, handsRef, gesturesRef, goToPageDirect])
 
   const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    // Revoke previous blob URL
-    setImageUrl(prev => {
-      if (prev && isBlobUrl.current) URL.revokeObjectURL(prev)
-      return null
-    })
+    setImageUrl(prev => { if (prev && isBlobUrl.current) URL.revokeObjectURL(prev); return null })
     isBlobUrl.current = false
+    pagesRef.current  = []
+    currentPageRef.current = 0
     setPages([])
     setCurrentPage(0)
     setDocError(null)
@@ -233,10 +317,11 @@ export function ARInspector2D() {
     if (ext === 'pdf') {
       setDocLoading(true)
       try {
-        const pageUrls = await loadPdfPages(file)
-        setPages(pageUrls)
+        const urls = await loadPdfPages(file)
+        pagesRef.current = urls
+        setPages(urls)
         setCurrentPage(0)
-        setImageUrl(pageUrls[0] ?? null)
+        setImageUrl(urls[0] ?? null)
       } catch (err) {
         setDocError(err instanceof Error ? err.message : 'Failed to load PDF')
       } finally {
@@ -245,10 +330,11 @@ export function ARInspector2D() {
     } else if (ext === 'pptx') {
       setDocLoading(true)
       try {
-        const slideUrls = await loadPptxSlides(file)
-        setPages(slideUrls)
+        const urls = await loadPptxSlides(file)
+        pagesRef.current = urls
+        setPages(urls)
         setCurrentPage(0)
-        setImageUrl(slideUrls[0] ?? null)
+        setImageUrl(urls[0] ?? null)
       } catch (err) {
         setDocError(err instanceof Error ? err.message : 'Failed to load PPTX')
       } finally {
@@ -260,26 +346,20 @@ export function ARInspector2D() {
     }
   }, [])
 
-  const goToPage = useCallback((index: number) => {
-    if (index < 0 || index >= pages.length) return
-    setCurrentPage(index)
-    setImageUrl(pages[index])
-    resetTransform()
-  }, [pages])
-
   const screenStatus =
     modelStatus === 'loading' ? 'loading' :
     modelStatus === 'error' || cameraStatus === 'error' ? 'error' :
     isRunning ? null :
     'ready'
 
-  const screenError = modelError || cameraError
+  const screenError   = modelError || cameraError
+  const isMultiPage   = pages.length > 1
 
   return (
     <div className="flex flex-col items-center gap-4 w-full max-w-4xl">
 
-      {/* File loader */}
-      <div className="flex items-center gap-3 w-full">
+      {/* File loader row */}
+      <div className="flex items-center gap-3 w-full flex-wrap">
         <label className="cursor-pointer flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
           Load File
           <input type="file" accept={ACCEPT} onChange={handleFile} className="hidden" />
@@ -289,6 +369,33 @@ export function ARInspector2D() {
         )}
         {docError && (
           <span className="text-red-400 text-sm">{docError}</span>
+        )}
+
+        {/* Nav mode toggle — only shown for multi-page documents */}
+        {isMultiPage && (
+          <div className="ml-auto flex items-center gap-1">
+            <span className="text-xs text-slate-500 mr-1">Nav:</span>
+            <button
+              onClick={() => setNavMode('buttons')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                navMode === 'buttons'
+                  ? 'bg-violet-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              Floating Buttons
+            </button>
+            <button
+              onClick={() => setNavMode('gesture')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                navMode === 'gesture'
+                  ? 'bg-violet-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              Gesture
+            </button>
+          </div>
         )}
       </div>
 
@@ -335,6 +442,45 @@ export function ARInspector2D() {
           </div>
         )}
 
+        {/* Floating nav buttons — position via RAF, pinch-tap only (no mouse) */}
+        <div
+          ref={navBtnsRef}
+          className="absolute z-20 pointer-events-none"
+          style={{
+            display: isMultiPage && navMode === 'buttons' && !!imageUrl ? 'block' : 'none',
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <div className="flex items-center gap-2 bg-black/75 backdrop-blur-sm rounded-full px-3 py-2 border border-white/10">
+            <button
+              ref={prevBtnRef}
+              disabled={currentPage === 0}
+              className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30 text-white text-3xl leading-none select-none"
+            >
+              <img className="invert brightness-200 h-6" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA6UlEQVR4nO3WwQoBURTG8X9KVnZKWVl4ABtLKytbNrwDXsJ4CCteYR6AbJSRZ1CUleykRGg0U9NpLM+5lK/u5m5+3du55x7450eSBwLgGa25BZoB/AQaro0FPBLoCahoo23gkUBvQEMbrQJncdqeNloE9gKdaKNZYCHQJZDThscC3UU3oJqBQC9ATRttRFUbo2E1d7TRMnAUpx1ikLVA/ahjqSdwBZdTrtrDKHXgKoqra4X3XTynTw3kAJQwSNZVywxTALYCn2KUasq3GNaASVpiELgDTSvcczH6OB324vF2lYBn791/vikvhQ9rMP7mWfoAAAAASUVORK5CYII=" alt="chevron-left" />
+            </button>
+            <span className="text-white text-sm tabular-nums min-w-[3.5rem] text-center select-none font-medium">
+              {currentPage + 1} / {pages.length}
+            </span>
+            <button
+              ref={nextBtnRef}
+              disabled={currentPage === pages.length - 1}
+              className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30 text-white text-3xl leading-none select-none"
+            >
+              <img className="invert brightness-200 h-6" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA3klEQVR4nO3WMQrCQBCF4Z+AWNkJgpWFB7DQ0iqVrTZ6B/USxkOk0it4AIONoOAZBAUrsRNBFCOBFZbBTjKRJQ+2/phldnYgz58lAmJztkBJC95ZcHIWgKcB14CzwAOU0gbuFvwCBlr4SFR9A1paeCjwE1DVgAvASuBroKiBl4G9wOcopQFcBZ70gEq6prs/8BPoaOGBqPoC1DVgz0yyWIxVd+FpFlfdE831APwsntMwbbQCHAU6c3ZkhgI9mBtINeMv32IzbdQ3XWsvAv0sVp8JLi97SwvdaK63efg1bx9lay4TR1IYAAAAAElFTkSuQmCC" alt="chevron-right" />
+            </button>
+          </div>
+        </div>
+
+        {/* Gesture nav hint badge */}
+        {isMultiPage && navMode === 'gesture' && isRunning && (
+          <div className="absolute top-3 right-3 z-20 pointer-events-none">
+            <span className="bg-black/60 text-white text-xs px-2.5 py-1.5 rounded-lg backdrop-blur-sm">
+              Thumb Up / Down = page
+            </span>
+          </div>
+        )}
+
         {/* Document processing overlay */}
         {docLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 z-30">
@@ -369,8 +515,8 @@ export function ARInspector2D() {
         )}
       </div>
 
-      {/* Page / slide navigation */}
-      {pages.length > 1 && (
+      {/* Bottom page bar — always visible for multi-page */}
+      {isMultiPage && (
         <div className="flex items-center justify-center gap-4 bg-slate-800/60 border border-slate-700 rounded-xl px-5 py-3 w-full">
           <button
             onClick={() => goToPage(currentPage - 1)}
