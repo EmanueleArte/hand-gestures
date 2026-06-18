@@ -1,13 +1,18 @@
+import { useState } from 'react'
+import { Header, type Tab } from './components/Header'
 import { GestureDetector } from './components/GestureDetector'
+import { ObjectInspector3D } from './components/ObjectInspector3D'
 
 export default function App() {
+  const [tab, setTab] = useState<Tab>('counter')
+
   return (
-    <div className="min-h-dvh bg-slate-950 text-slate-100 flex flex-col items-center px-4 py-10 gap-6">
-      <header className="text-center">
-        <h1 className="text-3xl font-bold tracking-tight">Hand Gesture Counter</h1>
-        <p className="text-slate-400 text-sm mt-1">Powered by MediaPipe GestureRecognizer</p>
-      </header>
-      <GestureDetector />
+    <div className="min-h-dvh bg-slate-950 text-slate-100 flex flex-col">
+      <Header active={tab} onChange={setTab} />
+      <main className="flex-1 flex flex-col items-center px-4 py-6 gap-6">
+        {tab === 'counter' && <GestureDetector />}
+        {tab === 'inspector' && <ObjectInspector3D />}
+      </main>
     </div>
   )
 }
