@@ -3,6 +3,7 @@ import { Header, type Tab } from './components/Header'
 import { GestureDetector } from './components/GestureDetector'
 import { ObjectInspector3D } from './components/ObjectInspector3D'
 import { ARInspector3D } from './components/ARInspector3D'
+import { ARInspector2D } from './components/ARInspector2D'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('counter')
@@ -14,6 +15,7 @@ export default function App() {
         {tab === 'counter'   && <GestureDetector />}
         {tab === 'inspector' && <ObjectInspector3D />}
         {tab === 'ar'        && <ARInspector3D />}
+        {tab === 'ar2d'      && <ARInspector2D />}
       </main>
     </div>
   )
