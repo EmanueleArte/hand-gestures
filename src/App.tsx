@@ -11,7 +11,7 @@ export default function App() {
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100 flex flex-col">
       <Header active={tab} onChange={setTab} />
-      <main className="flex-1 flex flex-col items-center px-4 py-6 gap-6">
+      <main className="flex-1 flex flex-col items-center px-4 py-6 pt-18 gap-6">
         {tab === 'counter'   && <GestureDetector />}
         {tab === 'inspector' && <ObjectInspector3D />}
         {tab === 'ar'        && <ARInspector3D />}

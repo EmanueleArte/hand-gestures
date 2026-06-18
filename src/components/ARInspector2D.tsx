@@ -377,10 +377,15 @@ export function ARInspector2D() {
 
       {/* File loader row */}
       <div className="flex items-center gap-3 w-full flex-wrap">
-        <label className="cursor-pointer flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          Load File
-          <input type="file" accept={ACCEPT} onChange={handleFile} className="hidden" />
-        </label>
+        <div className="relative group">
+          <label className="cursor-pointer flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            Load File
+            <input type="file" accept={ACCEPT} onChange={handleFile} className="hidden" />
+          </label>
+          <div className="pointer-events-none absolute left-0 top-full mt-2 z-50 w-max rounded-lg bg-slate-800 border border-slate-600 px-3 py-2 text-xs text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity duration-150 shadow-lg">
+            PNG · JPG · JPEG · SVG · PDF · PPTX
+          </div>
+        </div>
         {imageName && (
           <span className="text-slate-400 text-sm truncate max-w-xs">{imageName}</span>
         )}
