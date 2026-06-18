@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-Content \"C:\\\\Users\\\\EMANUE~1.ART\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-emanuele-artegiani-Documents-Progetti-hand-gestures\\\\4f88078a-c832-4c41-bca5-255f74cffa23\\\\tasks\\\\b3f1zcgb5.output\" -Wait -Tail 20)",
+      "Bash(Select-Object -First 30)",
+      "Bash(pnpm exec *)",
+      "Bash(pnpm build *)",
+      "Bash(pnpm install *)"
+    ]
+  }
+}
