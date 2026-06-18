@@ -15,7 +15,7 @@ type Props = {
 export function Header({ active, onChange }: Props) {
   return (
     <header className="fixed w-full border-b border-slate-700 bg-slate-900">
-      <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-1">
+      <div className="w-full mx-auto px-4 h-14 flex items-center justify-center gap-1">
         {TABS.map(tab => (
           <button
             key={tab.id}

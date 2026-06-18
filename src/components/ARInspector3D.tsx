@@ -10,7 +10,7 @@ import { FullscreenButton } from './FullscreenButton'
 
 // Pinch detection thresholds (normalized thumb-tip ↔ index-tip distance)
 const PINCH_START = 0.07   // enter pinch mode
-const PINCH_END   = 0.22   // exit pinch mode (hysteresis keeps it active while spreading)
+const PINCH_END   = 0.1    // exit pinch mode
 
 // Grab: 3D world-space radius around cube center that activates grab
 const GRAB_RADIUS = 1.2
@@ -20,8 +20,8 @@ const GRAB_RADIUS = 1.2
 const ROT_SPEED_YAW   = 2.0
 const ROT_SPEED_PITCH = 2.0
 
-// Scale change per world-unit of two-pinch-center distance delta
-const SCALE_SPEED = 0.4
+// Scale change per diagonal-fraction delta (screen-space, same as ARInspector2D)
+const SCALE_SPEED = 1.5
 
 const MIN_SCALE = 0.2
 const MAX_SCALE = 5
@@ -29,6 +29,10 @@ const MAX_SCALE = 5
 // Position bounds in world space
 const MAX_X = 5
 const MAX_Y = 3
+
+function lmToPixels(lm: { x: number; y: number }, w: number, h: number) {
+  return { x: (1 - lm.x) * w, y: lm.y * h }
+}
 
 const LEGEND = [
   { label: 'Grab & Move',  desc: 'Pinch near cube → drag' },
@@ -61,12 +65,10 @@ function ARCube({ handsRef, gesturesRef, onGrabChange, onZoomChange }: ARCubePro
   const isPinch1H = useRef(false)
 
   // ── Two-hand state ─────────────────────────────────────────────────────────
-  // Separate pinch hysteresis per hand so each hand can reach PINCH_START
-  // independently before zoom activates.
-  const isPinch2H_0    = useRef(false)
-  const isPinch2H_1    = useRef(false)
-  const prevZoomDist   = useRef<number | null>(null)
-  const wasZooming     = useRef(false)
+  // Activates only when BOTH hands pinch simultaneously (same as ARInspector2D).
+  const isPinch2H    = useRef(false)
+  const prevZoomDist = useRef<number | null>(null)
+  const wasZooming   = useRef(false)
 
   // Reused THREE objects (avoid per-frame allocation)
   const raycasterR = useRef(new THREE.Raycaster())
@@ -102,11 +104,10 @@ function ARCube({ handsRef, gesturesRef, onGrabChange, onZoomChange }: ARCubePro
       targetPos.current.set(0, 0, 0)
       targetRot.current = { x: 0, y: 0 }
       targetScale.current = 1
-      isGrabbing.current = false
-      isPinch1H.current  = false
-      isPinch2H_0.current = false
-      isPinch2H_1.current = false
-      prevHandPose.current  = null
+      isGrabbing.current   = false
+      isPinch1H.current    = false
+      isPinch2H.current    = false
+      prevHandPose.current = null
       prevZoomDist.current = null
       if (wasGrabbing.current) { onGrabChange(false); wasGrabbing.current = false }
       if (wasZooming.current)  { onZoomChange(false); wasZooming.current  = false }
@@ -126,29 +127,26 @@ function ARCube({ handsRef, gesturesRef, onGrabChange, onZoomChange }: ARCubePro
       const pd0 = pinchDist(hands[0])
       const pd1 = pinchDist(hands[1])
 
-      // Per-hand hysteresis: each hand independently enters/exits pinch mode
-      if (!isPinch2H_0.current && pd0 < PINCH_START) isPinch2H_0.current = true
-      else if (isPinch2H_0.current && pd0 > PINCH_END) isPinch2H_0.current = false
+      // Activate only when BOTH hands pinch simultaneously;
+      // deactivate as soon as EITHER hand opens
+      if (!isPinch2H.current && pd0 < PINCH_START && pd1 < PINCH_START)
+        isPinch2H.current = true
+      else if (isPinch2H.current && (pd0 > PINCH_END || pd1 > PINCH_END))
+        isPinch2H.current = false
 
-      if (!isPinch2H_1.current && pd1 < PINCH_START) isPinch2H_1.current = true
-      else if (isPinch2H_1.current && pd1 > PINCH_END) isPinch2H_1.current = false
+      if (isPinch2H.current) {
+        const { width: w, height: h } = state.size
+        const c0 = lmToPixels(pinchCenter(hands[0]), w, h)
+        const c1 = lmToPixels(pinchCenter(hands[1]), w, h)
+        const diag    = Math.hypot(w, h)
+        const relDist = Math.hypot(c0.x - c1.x, c0.y - c1.y) / diag
 
-      const bothPinching = isPinch2H_0.current && isPinch2H_1.current
-
-      if (bothPinching) {
-        // Distance between the two pinch centers drives scale
-        const p0 = lmToWorld(pinchCenter(hands[0]))
-        const p1 = lmToWorld(pinchCenter(hands[1]))
-        if (p0 && p1) {
-          const dist = p0.distanceTo(p1)
-          if (prevZoomDist.current !== null) {
-            const dd = dist - prevZoomDist.current
-            // spreading (dd > 0) → zoom in; closing (dd < 0) → zoom out
-            targetScale.current = Math.max(MIN_SCALE,
-              Math.min(MAX_SCALE, targetScale.current + dd * SCALE_SPEED))
-          }
-          prevZoomDist.current = dist
+        if (prevZoomDist.current !== null) {
+          const dd = relDist - prevZoomDist.current
+          targetScale.current = Math.max(MIN_SCALE,
+            Math.min(MAX_SCALE, targetScale.current + dd * SCALE_SPEED))
         }
+        prevZoomDist.current = relDist
 
         if (!wasZooming.current) { onZoomChange(true); wasZooming.current = true }
       } else {
@@ -156,9 +154,7 @@ function ARCube({ handsRef, gesturesRef, onGrabChange, onZoomChange }: ARCubePro
         if (wasZooming.current) { onZoomChange(false); wasZooming.current = false }
       }
     } else {
-      // Reset two-hand state when back to fewer than 2 hands
-      isPinch2H_0.current = false
-      isPinch2H_1.current = false
+      isPinch2H.current    = false
       prevZoomDist.current = null
       if (wasZooming.current) { onZoomChange(false); wasZooming.current = false }
     }
