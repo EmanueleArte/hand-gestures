@@ -34,6 +34,25 @@ function midOf(a: Landmark[], b: Landmark[]) {
   return { x: (a[9].x + b[9].x) / 2, y: (a[9].y + b[9].y) / 2 }
 }
 
+// Direction perpendicular to wrist-wrist segment, pointing toward fingers.
+// Computed in canvas-pixel space so aspect ratio is respected.
+function computeFireDir(lms: Landmark[][], w: number, h: number): { x: number, y: number } {
+  const w0 = lms[0][0], w1 = lms[1][0]
+  // Wrist-to-wrist segment in pixels
+  const sx = (w1.x - w0.x) * w
+  const sy = (w1.y - w0.y) * h
+  // One perpendicular (the other is its negation)
+  const px = -sy, py = sx
+  // Vector from wrist midpoint toward finger midpoint (landmark 9)
+  const fx = ((lms[0][9].x + lms[1][9].x) / 2 - (w0.x + w1.x) / 2) * w
+  const fy = ((lms[0][9].y + lms[1][9].y) / 2 - (w0.y + w1.y) / 2) * h
+  // Pick the perpendicular aligned with the finger direction
+  const sign = (px * fx + py * fy) >= 0 ? 1 : -1
+  const dx = px * sign, dy = py * sign
+  const len = Math.hypot(dx, dy)
+  return len > 0 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 }
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 export function useKamehamehaLoop(
   videoRef:    React.RefObject<HTMLVideoElement | null>,
@@ -59,7 +78,7 @@ export function useKamehamehaLoop(
   const fxChargeRef      = useRef(0)
   // +1 = beam extends toward increasing canvas-x (appears as screen-left after mirror)
   // -1 = beam extends toward decreasing canvas-x (appears as screen-right after mirror)
-  const fxDirRef         = useRef(1)
+  const fxDirRef         = useRef({ x: 1, y: 0 })
   const scaleHistRef     = useRef<number[]>([])
 
   useEffect(() => {
@@ -82,16 +101,14 @@ export function useKamehamehaLoop(
     let lastTs    = -1
     let rafId     = 0
 
-    function go(next: KamehamehaPhase, ts: number) {
+    function go(next: KamehamehaPhase, ts: number, dir?: { x: number, y: number }) {
       phaseRef.current = next
       setPhase(next)
       if (next === 'FIRING') {
         firingStartRef.current = ts
         fxOriginRef.current    = { ...midRef.current }
         fxChargeRef.current    = chargeLvlRef.current
-        // midpoint.x > 0.5 → canvas right half → screen left after CSS flip
-        // → beam goes toward screen-left edge → increasing canvas-x (dir = +1)
-        fxDirRef.current       = midRef.current.x > 0.5 ? 1 : -1
+        fxDirRef.current       = dir ?? { x: 1, y: 0 }
       }
       if (next === 'COOLDOWN') cooldownStartRef.current = ts
       if (next === 'IDLE') {
@@ -169,15 +186,21 @@ export function useKamehamehaLoop(
         const c   = fxChargeRef.current
         const ox  = fxOriginRef.current.x * w
         const oy  = fxOriginRef.current.y * h
-        const dir = fxDirRef.current
+        const dir = fxDirRef.current   // unit vector {x, y}
+        // Perpendicular to beam direction (for vibration spread)
+        const perpX = -dir.y
+        const perpY =  dir.x
 
         // Beam extends quickly (within 400 ms), max length scales with charge
-        const extT     = Math.min(elapsed / 400, 1)
-        const beamLen  = w * (0.40 + c * 0.70) * extT
-        const beamEndX = ox + dir * beamLen
+        const extT    = Math.min(elapsed / 400, 1)
+        const beamLen = w * (0.40 + c * 0.70) * extT
+        const beamEndX = ox + dir.x * beamLen
+        const beamEndY = oy + dir.y * beamLen
 
-        // Slight vertical vibration during FIRING (energy turbulence)
-        const vibY = elapsed < FIRING_MS ? Math.sin(elapsed * 0.08) * 4 * c * ba : 0
+        // Slight vibration perpendicular to beam during FIRING
+        const vibMag = elapsed < FIRING_MS ? Math.sin(elapsed * 0.08) * 4 * c * ba : 0
+        const vibX = perpX * vibMag
+        const vibY = perpY * vibMag
 
         // Screen flash at ignition
         if (elapsed < 180) {
@@ -195,7 +218,7 @@ export function useKamehamehaLoop(
           { lw: 18,            a: 1.00 },
         ]
         for (const { lw, a } of layers) {
-          const grd = fxCtx.createLinearGradient(ox, oy + vibY, beamEndX, oy + vibY)
+          const grd = fxCtx.createLinearGradient(ox + vibX, oy + vibY, beamEndX + vibX, beamEndY + vibY)
           const ca  = a * ba
           grd.addColorStop(0,   `rgba(220,245,255,${ca})`)
           grd.addColorStop(0.2, `rgba(120,200,255,${ca})`)
@@ -205,8 +228,8 @@ export function useKamehamehaLoop(
           fxCtx.lineWidth   = lw
           fxCtx.strokeStyle = grd
           fxCtx.lineCap     = 'round'
-          fxCtx.moveTo(ox, oy + vibY)
-          fxCtx.lineTo(beamEndX, oy + vibY)
+          fxCtx.moveTo(ox + vibX, oy + vibY)
+          fxCtx.lineTo(beamEndX + vibX, beamEndY + vibY)
           fxCtx.stroke()
         }
 
@@ -217,8 +240,8 @@ export function useKamehamehaLoop(
           const spread = (1 - frac) * 28 * c
           fxCtx.beginPath()
           fxCtx.arc(
-            ox + dir * beamLen * frac,
-            oy + vibY + (Math.random() - 0.5) * spread,
+            ox + vibX + dir.x * beamLen * frac + perpX * (Math.random() - 0.5) * spread,
+            oy + vibY + dir.y * beamLen * frac + perpY * (Math.random() - 0.5) * spread,
             1.5 + Math.random() * 3 * c,
             0, Math.PI * 2,
           )
@@ -230,12 +253,12 @@ export function useKamehamehaLoop(
         const t_  = Math.min(elapsed / totalMs, 1)
         const sr  = maxR * 1.6 * c * (1 - t_ * 0.75)
         if (sr > 1) {
-          const grd2 = fxCtx.createRadialGradient(ox, oy + vibY, 0, ox, oy + vibY, sr)
+          const grd2 = fxCtx.createRadialGradient(ox + vibX, oy + vibY, 0, ox + vibX, oy + vibY, sr)
           grd2.addColorStop(0,   `rgba(255,255,255,${ba * 0.95})`)
           grd2.addColorStop(0.3, `rgba(160,225,255,${ba * 0.8})`)
           grd2.addColorStop(1,   'rgba(50,120,255,0)')
           fxCtx.beginPath()
-          fxCtx.arc(ox, oy + vibY, sr, 0, Math.PI * 2)
+          fxCtx.arc(ox + vibX, oy + vibY, sr, 0, Math.PI * 2)
           fxCtx.fillStyle = grd2
           fxCtx.fill()
         }
@@ -311,7 +334,7 @@ export function useKamehamehaLoop(
                 const older = hist.slice(0, half).reduce((s, v) => s + v, 0) / half
                 const newer = hist.slice(-half).reduce((s, v) => s + v, 0) / half
                 if (newer / older > FIRE_SCALE_RATIO && chargeLvlRef.current >= MIN_CHARGE_TO_FIRE) {
-                  go('FIRING', ts)
+                  go('FIRING', ts, computeFireDir(lms, w, h))
                 }
               }
             }
